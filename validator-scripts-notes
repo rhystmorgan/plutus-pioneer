@@ -1,0 +1,123 @@
+-- Validator Scripts Notes
+
+{-# OPTIONS_GHC -fno-warn-unused-imports #-}
+
+{-# INLINABLE mkValidator #-}
+mkValidator :: BuiltinData -> BuiltinData -> BuiltinData -> () -- () is a Unit type and it is an unspecified type in haskell, it is here to represent 'something'
+mkValidator _ _ _ = ()
+
+-- With this initial example, the Validator always succeeds because the mkValidator doesn't care what the 3 arguments are, it always passes
+-- Now that we ave defined the function, we need to create a validator
+
+-- This validator uses an advanced feature called Template Haskell.
+-- In the repl you need to import the relevant modules:
+-- import Ledger.Scripts
+-- import PlutusTx
+
+-- the compile function takes and expression (a) and turns it into CompiledCode a 
+
+validator :: Validator
+validator = mkValidatorScript $$(PlutusTx.compile [|| mkValidator ||])
+
+-- to make our validator, we take the mkValidator function, we put it in Oxford Brackets [||mkValidator||] 
+-- The result is to create a syntax tree from mkValidator - this is what the 'compile' function expects.
+-- It then compiles it into the corresponding PlutusCore syntax tree
+-- the $$ is the opposite of the Oxford Brasckets it Splices the syntax tree and splices it into the code at that point
+-- The mkValidatorScript takes the result and turns it into the Script used as the validator
+-- THis seems super complicate, but really it is a normal this that is always more or less the same
+
+-- Normally Oxford Brackewts don't allow you to reference information outside of them, so you need to 'inline' the code
+-- Because of this you want to define as much as possible outside of the Oxford Brackets so you can inline the function but keeps it separate
+-- for this we also include the 'Pragma' {-# INLINABLE mkValidator #-}
+
+-- Now that we have our Validaotr we can use it to create a Hash and a Script Address
+-- We apply the Script.validatorHash to Validator - creating the Hash
+-- We apply the scriptAddress to the Validator - creating the Address
+
+-- This is all boilerplate Plutus Scripting and will always be in your code
+
+valHash :: Ledger.ValidatorHash
+valHash = Scripts.validatorHash validator
+
+scrAddress :: Ledger.Address
+scrAddress = scriptAddress validator
+
+-- These are some of the fundamental elements of Plutus Scripts
+-- Here we have mkValidator function which takes 3 Arguments, arbitrary data types, and returns a unit ()
+-- This data is the Datum, Redeemer & Context - The context is consumed with the transaction.
+-- We use this to create the validator using mkValidatorScript
+-- This in turn is used to create a Validator Hash & Script Address
+
+-- So let's create a Validator that expects a certain input
+
+{-# INLINABLE mkValidator #-}
+mkValidatorR :: BuiltinData -> BuiltinData -> BuiltinData -> ()
+mkValidatorR _ r _
+    | r == Builtins.mkI 42  = ()
+    | otherwise             = traceError "wrong redeemer!"
+
+-- Here we has specfied the Redeemer for the mkValidator
+-- We have specified a Redeemer as an Int and we are expecting 42 to run the script
+-- If we don't get a 42 remdeemer, then the script will return an error
+
+-- TYPED VALIDATION SCRIPTS
+
+{-# INLINABLE mkValidator #-}
+mkValidatorR :: BuiltinData -> BuiltinData -> BuiltinData -> ()
+mkValidatorR _ r _
+    | r == Builtins.mkI 42  = ()
+    | otherwise             = traceError "wrong redeemer!"
+
+-- Now lets set some specific inputs rather than built in data
+-- We dont care much about the Datum in this case so we can just have a unit ()
+-- We give the redeemer an Integer Value as before
+-- The context we use the built Plutus ScriptContext
+-- We also return a much more natural Bool response
+-- Even with a Bool we can still respond with an error
+
+{-# INLINABLE mkValidator #-}
+mkValidatorR :: () -> Integer -> ScriptContext -> Bool
+mkValidatorR _ r _ = r == 42
+
+-- This dramatically simplifies the function itself, however it doesn't return a dubugging info if it fails (False)
+-- So we use the traceIfFalse function
+
+{-# INLINABLE mkValidator #-}
+mkValidatorR :: () -> Integer -> ScriptContext -> Bool
+mkValidatorR _ r _ = traceIfFalse "wrong redeemer" (r == 42)
+
+-- Now that we have written our Validator in Haskell, we need to complie it to Plutus Core
+
+-- Something we didnt have before is to include data whcih we use to import the data types and turn them into Scripts.ValidatorTypes
+
+data Typed
+instance Scripts.ValidatorTypes Typed where
+        type instance DatumType Typed = ()
+        type instance RedeemerType Typed = Integer
+
+-- The types of the arguments were specified in mkValidator above and data Typed should expect those values
+
+-- Now we can compile into the Plutus.Tx as we did above, but we specify the types for the Datum and Redeemer
+-- We then need to create the typedValidator function to generate the typed valHash and scrAddress as normal
+
+typedValidator :: Scripts.TypedValidator Typed
+typedValidator = Script.mkTypedValidator @Typed
+    $$(PlutusTx.compile [|| mkValidator ||])
+    $$(PlutusTx.compile [|| wrap ||])
+  where
+    wrap = Scripts.wrapValidator @() @Integer
+
+-- create a useable validator now using the typedVaidator we have created
+
+validator :: Validator
+validator = Sripts.validatorScript typedValidator
+
+-- Then we can create the Validator Hash using the typedValidator
+
+valHash :: Ledger.ValidatorHash
+valHash = Scripts.validatorHash typedValidator
+
+-- Finally we can create the scrAddress from the validator using the scriptAddress function
+
+scrAddress :: Ledger.Address
+scrAddress = scriptAddress validator
