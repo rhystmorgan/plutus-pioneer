@@ -1,0 +1,45 @@
+Plutus in the Cardano CLI
+
+To get started with Plutus in the Cardano-cli, we need to serialise and write to disk various plutus types
+Check Week03 Deploy
+
+In order to do this we need to use the Cardano.API
+
+This is the underlying Haskell library that the Cardano-CLI uses under the hood
+
+The Cardano API has its own data Type it looks very similar to the Plutus data types
+
+import              Cardano.Api
+import              Cardano.Api.Shelley     (PlutusScript (..))
+import              Codec.Serialise         (serialise)
+import              Data.Aeson              (encode)
+...
+
+import              Week03.Parameterized
+
+dataToScriptData :: Data -> ScriptData
+dataToScriptData (Constr n xs)  = ScriptDataConstructor n $ dataToScriptData <$> xs
+dataToScriptData (Map xs)       = ScriptDataMap [(dataToScriptData x, dataToScriptData y) | (x, y) <- xs]
+dataToScriptData (List xs)      = Script
+
+
+-- The Cardano.API has its own Data tye, it is similar to the Plutus 'ScriptData' but it is differetn, so we need to convert it
+
+-- Then we need to serialise to Json
+
+-- we use the Aeson Library to 'encode' to Json
+
+-- Then we write the file too json
+
+writeUnit :: IO ()
+writeUnit = writeJson "testnet/unit.json" ()
+
+writeVestingValidator :: IO (Either (FileError ()) ())
+writeVestingValidator = writeValidator "testnet/vesting.plutus" $ validator $ VestingParam
+    { beneficiary   = Ledger.PaymentPubKeyHash
+    , deadline      = -- POSIXTIME Deadline
+    }
+
+
+HOMEWORK
+
