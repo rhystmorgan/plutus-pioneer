@@ -1,0 +1,316 @@
+SCRIPT CONTEXT
+
+In the previous lecture we talked about typed validators, but we skipped over Script CONTEXT
+
+data ScriptContext has two Constructors
+
+    scriptContextTxInfo :: TxInfo
+    scriptContextPurpose :: ScriptPurpose 
+
+data ScriptPurpose
+
+    The purpose of the script that is running
+
+    Constructors
+
+    Minting - CurrencySymbol
+    Spending - TxOutRef
+    Rewarding - StakingCredentials
+    Certifying - DCert
+
+The actual 'context' is in the TxInfo
+
+TxInfo contains the information of the transaction
+
+    txInfoInputs :: [TxInInfo] -- Transaction Inputs 
+    txInfoOutputs :: [TxOut] -- Transaction Outputs
+    txInfoFee :: Value -- The fee paid by the transaction -- this will be renamed to txInfoMint in future
+    txInfoForge :: Value -- The Value minted by the transaction
+    txInfoDCert :: [DCert] -- Digets of certificates included in the Tx
+    txInfoWdrl :: [(StakingCredential, Integer)] -- Withdrawls
+    txInfoValidRange :: POSIXTimeRange -- the valid range for the transaction
+    txInfoSignatories :: [PubKeyHash] -- Signatures provided with the transaction
+    txInfoData :: [(DatumHash, Datum)]
+    txInfoId :: TxId -- Hash of the pendingtransaction (excluding witnesses)
+
+By default all transactions us the Infinite time range
+The only exceptions we have seen so far were the EnglishAuction.hs example
+There is one excception to this, the Ouroborous protocol does not use Real-Time it uses Slots to determine time.
+For this reason we neeed to always calculate the times of the slots and slot intervals
+
+You can't specify arbitrary time ranges, it can only be a max of 36 hours in the future (if it is a fixed time) otherwise it can be infinite, but that is it.
+
+POSIXTime :: Interval POSIXTime
+
+data Interval
+    UpperBound
+    LowerBound
+
+Checking Bounds in the repl
+
+Prelude Week03.Deploy> import Plutus.V1.Ledger.Interval
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> interval (10 :: Integer) 20
+Interval {ivFrom = LowerBound (Finite 10) True, ivTo = UpperBound (Finite 20) True}
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> member 9 $ interval (10 :: Integer) 20     -- Is 9 a 'member' of this interval 10-20 ? False
+False
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> member 10 $ interval (10 :: Integer) 20    -- Is 10 a 'member' of this interval 10-20? True
+True
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> member 30 $ interval (10 :: Integer) 20    -- Is 30 a 'member' of this interval 10-20? Fase
+False
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> member 30 $ from (10 :: Integer)           -- Is 30 a 'member' of the interval (from) 10 (infinite if no specified upper bound) True
+True
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> member 31 $ to (30 :: Integer)             -- Is 31 a 'member' of the interval (to) 10? this means up to 10 i.e. max bound of 10 False
+False
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> member 7 $ to (30 :: Integer)              -- Is 7 a 'member' of the interval (to) 30? up to 30? True
+True
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> intersection (interval (10 :: Integer) 20) $ interval 18 30
+Interval {ivFrom = LowerBound (Finite 18) True, ivTo = UpperBound (Finite 20) True}
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> contains (to (100 :: Integer)) $ interval 30 80
+True
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> contains (to (100 :: Integer)) $ interval 30 100
+True
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> contains (to (100 :: Integer)) $ interval 30 101
+False
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> overlaps (to (100 :: Integer)) $ interval 30 101
+True
+Prelude Plutus.V1.Ledger.Interval Week03.Deploy> overlaps (to (100 :: Integer)) $ interval 101 110
+False
+
+This allows us to check the bounds or time intervals within a transaction, is a bound contained within a particular time period 
+
+Imagine you want to gift an amount of ADA to a child, but you only wwant the child to have access when they turn a certain arguments
+This is a Vesting Scheme 
+
+You put money into a script, only a certain person can withdraw it, only after a certain period of time (deadline)
+
+data VestingDatum = VestingDatum
+    { beneficiary   :: PaymentPubKeyHash
+    , deadline      :: POSIXTime
+    } deriving Show
+
+PlutusTx.unstableMakeIsData ''VestingDatum -- In production you would not use unstable, but we will use it for now
+
+{-# INLINABLE mkValidator #-}
+mkValidator :: VestingDatum -> () -> ScriptContext -> Bool
+mkValidator dat () ctx =    traceIfFalse "beneficiary's signature missing" signedByBeneficiary &&
+                            traceIfFalse "deadline not reached" deadlineReached
+
+    where
+        info :: TxInfo
+        info = scriptContextTxInfo ctx 
+
+        signedByBeneficiary :: Bool
+        signedByBeneficiary = txSignedBy info $ unPaymentPubKeyHash $ beneficiary dat -- unPaymentPubKeyHash is Underlying pub key hash
+
+        deadlineReached :: Bool
+        deadlineReached = contains (from $ deadline dat) $ txInfoValidRange info 
+
+data Vesting -- Remember data Typed from last week?
+instance Scripts.ValidatorTypes Vesting where
+    type instance DatumType Vesting = VestingDatum -- as in the mkValidator Function above
+    type instance RedeemerType Vesting = () -- as in the mkValidator function above
+
+-- then you create a typedValidator, to create a validator just as last week
+-- use that to create the valHash and scrAddress as normal
+
+The Off Chain
+
+type VestingSchema = -- defines the endpoints we want to expose to the User(s)
+            Endpoint "give" GiveParams  -- we use the same "give" and "grab" from last week
+        .\/ Endpoint "grab" ()          -- Give is for the person setting up the Vesting contract, and Grab is for the beneficiary
+
+
+SO WHAT PARAMATERS DO WE NEED? -- This is above the VestingSchema in the contract
+
+data GiveParams = GiveParams
+    { gpBeneficiary :: !PaymentPubKeyHash   -- The Public Key of the Beneficiary
+    , gpDeadline    :: !POSIXTime           -- The Deadline of the Vesting schedule
+    , gpAmount      :: !Integer             -- How much money you put in the UTXO
+    } deriving (Generric, ToJSON, FromJSON, TSchema)
+
+-- Once loaded into the Plutus Playground you will need to provide some information abut each wallet, the PubKeyHash
+-- You can generate this info in the Repl
+
+Prelude Week03.Deploy> import Wallet.Emulator
+Prelude Wallet.Emulator Week03.Deploy> :i Wallet
+type Wallet :: *
+newtype Wallet = Wallet {getWalletId :: WalletId}
+        -- Defined in ‘Wallet.Emulator.Wallet’
+instance Eq Wallet -- Defined in ‘Wallet.Emulator.Wallet’
+instance Ord Wallet -- Defined in ‘Wallet.Emulator.Wallet’
+instance Show Wallet -- Defined in ‘Wallet.Emulator.Wallet’
+Prelude Wallet.Emulator Week03.Deploy> :i WalletId
+type WalletId :: *
+newtype WalletId
+  = WalletId {unWalletId :: cardano-wallet-core-2022.1.18:Cardano.Wallet.Primitive.Types.WalletId}
+        -- Defined in ‘Wallet.Emulator.Wallet’
+instance Eq WalletId -- Defined in ‘Wallet.Emulator.Wallet’
+instance Ord WalletId -- Defined in ‘Wallet.Emulator.Wallet’
+instance Show WalletId -- Defined in ‘Wallet.Emulator.Wallet’
+Prelude Wallet.Emulator Week03.Deploy> knownWallet 1 -- Then the number of the Wallet in the Playground e.g knownWallet 2
+Wallet 7ce812... Generated Wallet
+Prelude Wallet.Emulator Week03.Deploy> mockWalletPubKeyHash $ knownWallet 2
+080871080sd087g02n -- Returns PubKeyHash
+
+-- In the playground you will then need to generate the POSIXTime using the repl for the gpDeadline
+
+PARAMETERIZED CONTRACTS
+
+-- In the Vesting Contract we had the VestingDatum as a specified data type
+-- But the Datum was fixed
+
+-- Alternatively wee could bake this into the contract making it fixed
+-- All of the examples we have seen so far have been fixed, typed and untyped validators
+
+-- The idea of parameterised scripts is that you can have a parameter instead of a single script
+-- This will enable you to encompass a 'family' of scripts insteadd of a single script
+
+-- Depending on the value of the parameter you get differnt typedValidator's
+-- So instead of using Datum, we will use a Parameter
+
+data VestingParam = VestingParam
+    { beneficiary   :: PaymentPubKeyHash
+    , deadline      :: POSIXTime
+    } deriving Show
+
+{-# INLINABLE mkValidator #-}
+mkValidator :: VestingParam -> () -> () -> ScriptContext -> Bool
+mkValidator p () () ctx =    traceIfFalse "beneficiary's signature missing" signedByBeneficiary &&
+                            traceIfFalse "deadline not reached" deadlineReached
+
+    where
+        info :: TxInfo
+        info = scriptContextTxInfo ctx 
+
+        signedByBeneficiary :: Bool
+        signedByBeneficiary = txSignedBy info $ unPaymentPubKeyHash $ beneficiary p -- unPaymentPubKeyHash is Underlying pub key hash
+
+        deadlineReached :: Bool
+        deadlineReached = contains (from $ deadline p) $ txInfoValidRange info 
+
+data Vesting -- Remember data Typed from last week?
+instance Scripts.ValidatorTypes Vesting where
+    type instance DatumType Vesting = () -- as in the mkValidator Function above
+    type instance RedeemerType Vesting = () -- as in the mkValidator function above
+
+typedValidator :: VestingParam -> Scripts.TypedValidator Vesting
+typedValidator p = Scripts.mkTypedValidator @Vesting
+    $$(PlutusTx.compile [|| mkValidator p ||])  -- We need to have the argument p here with mkValidator
+    $$(PlutusTx.compile [|| wrap ||])           -- Remember that everything within the Oxford Brackets need to be known at compile time
+  where                                         -- We need to use LiftCode and apply that to p so we can run mkVal p 
+    wrap = Scripts.wrapValidator @() @()
+
+validator :: VestingParam -> Validator -- This now takes the VestingParam
+validator p = Scripts.validatorScript $ typedValidator p -- And we need to apply the argument here
+
+valHash :: VestingParam -> Ledger.ValidatorHash
+valHash = Scripts.validatorHash typedValidator
+
+scrAddress :: VestingParam -> Ledger.Address
+scrAddress = scriptAddress validator 
+
+# INSTEAD #
+
+typedValidator :: VestingParam -> Scripts.TypedValidator Vesting
+typedValidator p = Scripts.mkTypedValidator @Vesting
+    $$(PlutusTx.compile [|| mkValidator ||]) `PlutusTx.applyCode` liftCode p 
+    $$(PlutusTx.compile [|| wrap ||])           
+  where                                         
+    wrap = Scripts.wrapValidator @() @()
+
+-------------------------------------------------------------------------------------------
+-- HOWEVER THIS WONT COMPILE BECAUSE THE REPL WILL COMPLAIN WE DONT HAVE A LIFT instance --
+-------------------------------------------------------------------------------------------
+
+-- We need to add a lift instance for the VestingParam at the start
+
+PlutusTx.makeLift ''VestingParam
+{-# INLINABLE mkValidator #-}
+mkValidator :: VestingParam -> () -> () -> ScriptContext -> Bool
+mkValidator p () () ctx =    traceIfFalse "beneficiary's signature missing" signedByBeneficiary &&
+                            traceIfFalse "deadline not reached" deadlineReached
+
+    where
+        info :: TxInfo
+        info = scriptContextTxInfo ctx 
+
+        signedByBeneficiary :: Bool
+        signedByBeneficiary = txSignedBy info $ unPaymentPubKeyHash $ beneficiary p -- unPaymentPubKeyHash is Underlying pub key hash
+
+        deadlineReached :: Bool
+        deadlineReached = contains (from $ deadline p) $ txInfoValidRange info 
+
+data Vesting -- Remember data Typed from last week?
+instance Scripts.ValidatorTypes Vesting where
+    type instance DatumType Vesting = () -- as in the mkValidator Function above
+    type instance RedeemerType Vesting = () -- as in the mkValidator function above
+
+typedValidator :: VestingParam -> Scripts.TypedValidator Vesting
+typedValidator p = Scripts.mkTypedValidator @Vesting
+    ($$(PlutusTx.compile [|| mkValidator ||]) `PlutusTx.applyCode` liftCode p) 
+    $$(PlutusTx.compile [|| wrap ||])           
+  where                                         
+    wrap = Scripts.wrapValidator @() @()
+
+-- Now we get another error saying we have an illegal instance declaration
+-- Only one type can be given in an instance head
+
+-- We add the extension MultiParamTypeClass in the extensions at the top of the contract and that will enable it to work
+
+{-# LANGUAGE MultiParamTypeClasses #-}
+
+-- And try again and it should compile fine
+
+NOW LET'S HAVE A LOOK AT THE OFF-CHAIN CODE 
+
+data GiveParams = GiveParams
+    { gpBeneficiary :: !PaymentPubKeyHash   -- The Public Key of the Beneficiary
+    , gpDeadline    :: !POSIXTime           -- The Deadline of the Vesting schedule
+    , gpAmount      :: !Integer             -- How much money you put in the UTXO
+    } deriving (Generric, ToJSON, FromJSON, TSchema)
+
+type VestingSchema = -- defines the endpoints we want to expose to the User(s)
+            Endpoint "give" GiveParams  -- we use the same "give" and "grab" from last week
+        .\/ Endpoint "grab" POSIXTime   -- We know the beneficiary but we don't know the deadline, so it is included here
+
+-- The give Endpoint is very similar
+
+give :: AsContractErro e => GiveParams -> Contract w s e ()
+give gp = do
+    let p   = VestingParam
+                { beneficiary   = gpBeneficiary gp
+                , deadline      = gpDeadline gp 
+                }
+        tx  = Constraints.mustPayToTheScript () $ Ada.lovelaceValueOf $ gpAmount gp
+    ledgerTx <- submitTxConstraints (typedValidator p) tx
+    void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
+    logInfo @String $ printf "made a gift of %d lovelace to %s with deadline %s"
+        (gpAmount gp)
+        (show $ gpBeneficiary gp)
+        (show $ gpDeadline gp)
+
+grab :: forall w s e. AsContractError e => POSIXTime -> Contract w s e ()
+grab d = do
+    now     <- currentTime
+    pkh     <- ownPaymentPubKeyHash
+    if now < d                      -- We check if the deadline has passed
+        then logInfo @String $ "too early"  -- If not we log "too early to withdraw"
+        else do                             -- Otherwise we know the time has passed
+            let p = VestingParam
+                        { beneficiary   = pkh
+                        , deadline      = d 
+                        }
+            utxos <- utxosAt $ scrAddress p     -- We grab all the utxos for us, and with the deadline d
+            if Map.null utxos
+                then logInfo @Strings $ "no gifts available"
+                else do
+                    let orefs   = fst <$> Map.toList utxos
+                        lookups = Constraints.unspentOutputs utxos      <>
+                                  Constraints.otherScript (validator p)     -- If we have some we must say to submit all of those utxos
+                        tx :: TxConstraints Void Void
+                        tx      = mconcat [Constraints.mustSpendScriptOutput oref unitRedeemer | oref <- orefs] <>
+                                  Constraints.mustValidateIn (from now)
+                    ledgerTx <- submitTxConstraintsWith @Void lookups tx
+                    void $ awaitConfirmed $ getCardanoTxId ledgerTx
+                    logInfo @String $ "collected gifts"
+
