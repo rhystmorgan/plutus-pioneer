@@ -1,0 +1,246 @@
+Off Chain CODE
+
+IO
+
+In other languages:
+
+Unless information is specified, it could result in different results across different calls for particular functions, based on inputs provided by users on the front end
+
+In Haskell:
+
+If you use the same function it will (almost) always have the same value because of referential transparency
+so if you always call a function with the same arguments, then it will always have the same results
+
+We do however need ways too take inputs and outputs, we need to take information to output information into the world, otherwise we have a useless program
+It needs to do something
+
+For us to do this we have an IO type ccontrsuctor
+
+IO takes an argument and it allows something to happen to end up with that argument 
+
+eg IO Int
+
+Now this doesnt actually run the IO part, but it is waiting for that to happen, but you can execute IO actions in the repl
+
+main :: IO ()
+main = putStrLn "Hello, world!"
+
+There are a lot of basic IO actions built into Haskell, but we will ultimately need to create more complex forms of IO
+
+Functor :: (* -> *) -> Constraint
+
+Functor f where 
+    fmap :: (a -> b) -> f a -> f b 
+
+we can do this with IO
+
+Functor IO where
+    (a -> b) -> IO a -> IO b 
+
+-- The example given is toUpper
+
+toUpper :: Char -> Char
+
+toUpper 'q'
+'Q'
+
+map toUpper "Haskell"
+"HASKELL"
+
+:t map toUpper
+map toUpper :: [Char] -> [Char] 
+
+:t fmap (map toUpper) getLine
+fmap (map toUpper) getLine :: IO [Char] -- the Repl will wait for your input here
+Haskell -- then return the list of Char
+"HASKELLL"
+
+-- Another way to implemennt IO actions is to use '>>'
+
+putStrLn "Hello" >> putStrLn "World"
+Hello
+World
+
+-- Lars could remember what this is but he suggested it could be called the sequence command or something because it performs actions in sequence
+
+-- So '>>' basically just does the first one, then the second
+
+:t (>>=) 'BIND'
+(>>=) :: Monad m => m a -> (a -> m b) -> m b 
+
+-- This is basically saying
+
+if we take an IO that performs side effects and returns an 'a', and if we have a function that takes an 'a' and returns side effects with a 'b' which gets executed and returns side efefcts with a 'b'
+then we can simply combine them all and return the 'b' as the result
+
+getLine >>= putStrLn
+Haskell -- input
+Haskell -- output
+
+:t return
+return :: Monad m => a -> m a 
+return "Haskell" :: IO String
+"Haskell"
+
+Now with this we can define relatively complex IO actions
+
+bar :: IO () 
+bar = getLine >>= \s -> 
+      getLine >>= \t ->
+      putStrLn (s ++ t)
+
+cabal run 'program'
+
+it waits for IO s 
+it waits for IO t 
+
+onetwo -- it writes the concatination of the trwo inputs to the console
+
+This is enough for our purposes at the moment
+
+Lets focus on pure functional Haskell
+
+MAYBE
+
+:i Maybe
+type Maybe :: * -> *
+data Maybe a = Nothing | Just a 
+
+import Text.Reas (readMaybe)
+
+read "42" :: Int 
+42 -- with read if you have values it can recognise, it can parse
+
+read "42 + %" :: Int
+no parse -- if you have a different character it will return an error
+
+-- with readMaybe, if it cannot recognise an element it will return 'nothing' instead of an error
+
+readMaybe "42" :: Maybe Int
+42
+
+readMaybe "42 + %" :: Maybe Int
+Nothing
+
+
+
+Monads
+
+type EmulatorTrace = Eff '[StartContract]
+
+runEmulatorTrace :: EnmulatorConfig -> EmulatorTrace () -> ([EmulatorEvent], Maybe Error)
+
+InitialDictribution TxPool
+
+runEmulatorTrace def $ return ()        -- This will run a contract in the terminal, but the output includes a lot of data
+
+runEmulatorTraceIO $ return ()          -- This will run a contract with more distilled info, more user friendly 
+
+Prelude Plutus.Trace.Emulator Data.Default Week04.Contract> :t runEmulatorTraceIO'
+runEmulatorTraceIO'
+  :: TraceConfig -> EmulatorConfig -> EmulatorTrace () -> IO ()
+Prelude Plutus.Trace.Emulator Data.Default Week04.Contract> :t TraceConfig
+TraceConfig
+  :: (Wallet.Emulator.MultiAgent.EmulatorEvent' -> Maybe String)
+     -> GHC.IO.Handle.Types.Handle -> TraceConfig               -- This Handle can reference a file, so you can output into a file instead of just the terminal
+
+
+
+     Contract Monad
+
+     -- Contract w s e a
+
+    W is the log message, but the point is not to log but to actually shar information between contracts
+    S specifies the Endpoints (Schema) 
+    E is the types of Error Messages - String error messages or other types as you need, so we can throw exeptions 
+    A is 
+
+myContract1 :: Contract () Empty Text () -- Text is a better method for logging messages as it enables longer strings
+myContract1 = do
+    void $ Contract.throwError "BOOM!" -- this includes the Error message, you need to void this to enable what ever result you get to allow us to throw the error message
+    Contract.logInfo @String "hello from the contract"
+
+myTrace1 :: EmulatorTrace ()
+myTrace1 = void $ activateContractWallet (knownWallet 1) myContract1  -- activateCWallet returns a Handle to the contract, so we void to throw it away and leave a Unit
+
+test1 :: IO ()
+test1 = runEmulatorTraceIO myTrace1
+
+myContract2 :: Contract () Empty Void () -- The point of this is to catch the exception - we Change Test to Void to prevent it from throwing an exeption
+myContract2 = Contract.handleError
+    (\err -> Contract.logError $ "caught: " ++ unpack err) -- unpack changes the Text to a String from the Data.Text module
+    myContract1
+
+myTrace2 :: EmulatorTrace ()
+myTrace2 = void $ activateContractWallet (knownWallet 1) myContract1  
+
+test2 :: IO ()
+test2 = runEmulatorTraceIO myTrace1
+
+-- One other thing we should mention, is there are other ways errors can arise not just by throwing an error
+-- EG if you try to submit a TX it can fail and submit an error
+
+type MySchema = Endpoint "foo" Int -- the foo string here is actually a type, made possible witht the Data.Kind
+
+myContract3 :: Contract () _ Text ()
+myContract3 = 
+    awaitPromise $ endpoint @"foo" Contract.logInfo -- it will wait until this endpoint is called with an Int, once it is called it will continue by applying the function to the Int
+
+{- endpoint
+(a -> Contract w s e b) -> Promise w s e b
+    -}
+
+myTrace3 :: EmulatorTrace ()
+myTrace3 = do 
+    h <- activateContractWallet (knownWallet 1) myContract3 
+    callEndpoint @"foo" h 42
+
+-- What is we want the Endpoint to be more complicated?
+
+type MySchema1 = Endpoint "foo" Int .\/ Endpoint "bar" String
+
+myContract4 :: Contract () MySchema1 Text ()
+myContract4 = 
+    awaitPromise $ endpoint @"foo" Contract.logInfo
+    awaitPromise $ endpoint @"bar" Contract.logInfo
+
+myTrace4 :: EmulatorTrace ()
+myTrace4 = do 
+    h <- activateContractWallet (knownWallet 1) myContract3 
+    callEndpoint @"foo" h 42
+    callEndpoint @"bar" h "Haskell"
+
+test4 :: IO ()
+test4 = runEmulatorTrace myTrace4
+
+-- How Can we make use of the W argument in the Contract
+
+it must be a type Monoid
+
+mempty maps an empty element
+mappend combines 2 f the same elements and concatinates them (puts them together)
+
+myContract5 :: Contract [Int] Empty Text ()
+myContract5 = do
+    void $ Contract.waitNSlots 10
+    tell [1] 
+    void $ Contract.waitNSlots 10
+    tell [2]
+    void $ Contract.waitNSlots 10
+
+myTrace5 :: EmulatorTrace ()
+myTrace5 = do
+    h <- activateContractWallet (knownWallet 1) myContract5
+    void $ Emulator.waitNSlots 5
+    xs <- observableState h 
+    Extras.logInfo $ show xs
+    void $ Emulator.waitNSlots 10
+    ys <- observableState h
+    Extras.logInfo $ show ys 
+    void $ Emulator.waitNSlots 10
+    zs <- observableState h
+    Extras.logInfo $ show zs 
+
+test5 :: IO ()
+test5 = runEmulatorTrace myTrace5 
+
